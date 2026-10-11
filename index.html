@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Au-dessus des Toits 46</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/pannellum/2.5.6/pannellum.css">
+<style>
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { height: 100%; margin: 0; background: #000; color: #eee; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+  #map { position: absolute; inset: 0; background: #000; }
+  .leaflet-top { top: 56px; }
+  .leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) brightness(.9) contrast(.9) grayscale(.35); }
+
+  header { position: fixed; top: 0; left: 0; right: 0; z-index: 1000; height: 56px; display: flex; align-items: center; justify-content: space-between; padding: 0 14px; background: rgba(0,0,0,.88); }
+  h1 { margin: 0; font-size: 1.05rem; font-weight: 600; letter-spacing: .03em; }
+  h1 span { color: #777; font-weight: 400; }
+  nav { display: flex; gap: 8px; }
+
+  button { background: #000; color: #eee; border: 1px solid #555; border-radius: 6px; padding: 9px 13px; font-size: .9rem; font-family: inherit; }
+  button:active { background: #222; }
+  button.plein { background: #eee; color: #000; border-color: #eee; }
+  button:disabled { opacity: .5; }
+  button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+
+  #viewer { position: fixed; inset: 0; z-index: 2000; background: #000; display: flex; flex-direction: column; }
+  #viewer .barre { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; border-bottom: 1px solid #222; }
+  #viewer .barre strong { font-weight: 600; }
+  #vBox { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; }
+  #vBox img { max-width: 100%; max-height: 100%; object-fit: contain; }
+  #pano { width: 100%; height: 100%; }
+
+  #panel { position: fixed; left: 0; right: 0; bottom: 0; z-index: 1001; max-height: 58vh; overflow: auto; background: #000; border-top: 1px solid #444; padding: 14px; display: grid; gap: 10px; }
+  #panel .ligne { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+  #mode { margin: 0; color: #bbb; font-size: .9rem; line-height: 1.4; }
+  input, select { width: 100%; background: #000; color: #eee; border: 1px solid #555; border-radius: 6px; padding: 10px; font-size: 1rem; font-family: inherit; }
+  input[type=file] { padding: 8px; }
+  #coords { color: #bbb; font-size: .9rem; margin: 0; }
+  #msg { margin: 0; min-height: 1.2em; font-size: .9rem; color: #f5c26b; }
+  #loginBox { display: grid; gap: 8px; }
+  summary { color: #999; font-size: .9rem; padding: 4px 0; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Au-dessus des Toits <span>46</span></h1>
+  <nav>
+    <button id="btnContrib">Contributions</button>
+    <button id="btnAdd" class="plein">Ajouter</button>
+  </nav>
+</header>
+
+<div id="map"></div>
+
+<div id="viewer" hidden>
+  <div class="barre"><strong id="vTitle"></strong><button id="vClose">Fermer</button></div>
+  <div id="vBox"></div>
+</div>
+
+<section id="panel" hidden>
+  <div class="ligne">
+    <p id="mode"></p>
+    <button id="pClose">Fermer</button>
+  </div>
+  <input id="village" type="text" placeholder="Nom du village">
+  <select id="type">
+    <option value="360">Photo 360°</option>
+    <option value="classique">Photo classique</option>
+  </select>
+  <input id="file" type="file" accept="image/*">
+  <p id="coords">Touche la carte à l'endroit exact de la prise de vue.</p>
+  <button id="btnSend" class="plein">Envoyer la photo</button>
+  <p id="msg"></p>
+
+  <details id="adminBox">
+    <summary>Espace admin</summary>
+    <div id="loginBox">
+      <input id="email" type="email" placeholder="Email admin" autocomplete="username">
+      <input id="pwd" type="password" placeholder="Mot de passe" autocomplete="current-password">
+      <button id="btnLogin">Se connecter</button>
+    </div>
+    <button id="btnLogout" hidden>Se déconnecter</button>
+  </details>
+</section>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pannellum/2.5.6/pannellum.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<script>
+  // ====== À REMPLIR (Supabase, menu Settings > API) ======
+  const SUPABASE_URL = 'https://zjklgqcvfhycijetqtfc.supabase.co';
+  const SUPABASE_KEY = 'sb_publishable_0O5q9hnhMChPdVE3BoATeA_badc50em';
+  // =======================================================
+
+  const db = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+  const $ = (id) => document.getElementById(id);
+  const say = (t) => { $('msg').textContent = t; };
+
+  // ---------- Carte ----------
+  const map = L.map('map').setView([44.34, 1.55], 11);
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; OpenStreetMap', maxZoom: 19
+  }).addTo(map);
+
+  const principales = L.layerGroup().addTo(map);
+  const contributions = L.layerGroup();
+
+  async function charger() {
+    const { data, error } = await db.from('photos').select('*');
+    if (error) { console.error(error); return; }
+    principales.clearLayers();
+    contributions.clearLayers();
+    data.forEach((p) => {
+      const m = L.circleMarker([p.lat, p.lng], {
+        radius: 10, weight: 2, fillOpacity: .85,
+        color: p.contribution ? '#f5a623' : '#ffffff',
+        fillColor: p.contribution ? '#f5a623' : '#ffffff'
+      });
+      m.on('click', () => ouvrir(p));
+      (p.contribution ? contributions : principales).addLayer(m);
+    });
+  }
+
+  // ---------- Contributions (bouton afficher / masquer) ----------
+  $('btnContrib').onclick = () => {
+    if (map.hasLayer(contributions)) {
+      map.removeLayer(contributions);
+      $('btnContrib').textContent = 'Contributions';
+    } else {
+      map.addLayer(contributions);
+      $('btnContrib').textContent = 'Masquer les contributions';
+    }
+  };
+
+  // ---------- Visionneuse ----------
+  let pano = null;
+  function fermerVisionneuse() {
+    if (pano) { pano.destroy(); pano = null; }
+    $('vBox').innerHTML = '';
+    $('viewer').hidden = true;
+  }
+  function ouvrir(p) {
+    fermerVisionneuse();
+    $('viewer').hidden = false;
+    $('vTitle').textContent = p.village + (p.contribution ? ' (contribution)' : '');
+    if (p.type === '360') {
+      const d = document.createElement('div');
+      d.id = 'pano';
+      $('vBox').appendChild(d);
+      pano = pannellum.viewer('pano', { type: 'equirectangular', panorama: p.url_image, autoLoad: true });
+    } else {
+      const i = document.createElement('img');
+      i.src = p.url_image;
+      i.alt = p.village;
+      $('vBox').appendChild(i);
+    }
+  }
+  $('vClose').onclick = fermerVisionneuse;
+
+  // ---------- Connexion admin ----------
+  let session = null;
+  function majMode() {
+    $('mode').textContent = session
+      ? 'Mode admin : la photo ira dans la galerie principale.'
+      : 'Proposer une photo : elle apparaîtra dans les contributions après validation.';
+    $('loginBox').hidden = !!session;
+    $('btnLogout').hidden = !session;
+  }
+  db.auth.getSession().then(({ data }) => { session = data.session; majMode(); });
+  db.auth.onAuthStateChange((_e, s) => { session = s; majMode(); });
+
+  $('btnLogin').onclick = async () => {
+    const { error } = await db.auth.signInWithPassword({ email: $('email').value.trim(), password: $('pwd').value });
+    say(error ? 'Connexion refusée : ' + error.message : 'Connecté.');
+  };
+  $('btnLogout').onclick = () => db.auth.signOut();
+
+  // ---------- Panneau d'ajout ----------
+  let pin = null;
+  let pos = null;
+  $('btnAdd').onclick = () => { $('panel').hidden = false; majMode(); };
+  $('pClose').onclick = () => {
+    $('panel').hidden = true;
+    if (pin) { map.removeLayer(pin); pin = null; }
+    pos = null;
+    $('coords').textContent = "Touche la carte à l'endroit exact de la prise de vue.";
+  };
+
+  map.on('click', (e) => {
+    if ($('panel').hidden) return;
+    pos = e.latlng;
+    if (pin) pin.setLatLng(pos);
+    else pin = L.circleMarker(pos, { radius: 11, color: '#4ade80', fillColor: '#4ade80', fillOpacity: .9, weight: 2 }).addTo(map);
+    $('coords').textContent = 'Position : ' + pos.lat.toFixed(5) + ', ' + pos.lng.toFixed(5);
+  });
+
+  $('btnSend').onclick = async () => {
+    const f = $('file').files[0];
+    const village = $('village').value.trim();
+    if (!f || !village || !pos) { say('Il faut une photo, un nom de village et un point sur la carte.'); return; }
+
+    $('btnSend').disabled = true;
+    say('Envoi en cours…');
+
+    const contrib = !session;
+    const ext = (f.name.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '');
+    const chemin = (contrib ? 'contributions/' : '') + Date.now() + '.' + ext;
+
+    const up = await db.storage.from('photos').upload(chemin, f, { contentType: f.type });
+    if (up.error) { $('btnSend').disabled = false; say('Échec de l\'envoi : ' + up.error.message); return; }
+
+    const url = db.storage.from('photos').getPublicUrl(chemin).data.publicUrl;
+    const ins = await db.from('photos').insert({
+      village: village, lat: pos.lat, lng: pos.lng, type: $('type').value,
+      url_image: url, contribution: contrib, approved: !contrib
+    });
+    $('btnSend').disabled = false;
+    if (ins.error) { say('Échec de l\'enregistrement : ' + ins.error.message); return; }
+
+    say(contrib ? 'Merci ! Ta photo sera visible après validation.' : 'Photo ajoutée.');
+    $('file').value = '';
+    charger();
+  };
+
+  charger();
+</script>
+</body>
+</html>
